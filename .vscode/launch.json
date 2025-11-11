@@ -1,0 +1,25 @@
+{
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python Debugger: Eval with Args",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/eval.py",
+            "args": [
+                "--model_path", "./models/tinyphysics.onnx",
+                "--data_path", "./data",
+                "--num_segs", "100",
+                "--test_controller", "rl_controller",
+                "--baseline_controller", "pid"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}

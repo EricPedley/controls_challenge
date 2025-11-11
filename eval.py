@@ -133,7 +133,10 @@ if __name__ == "__main__":
   for controller_cat, controller_type in [('baseline', args.baseline_controller), ('test', args.test_controller)]:
     print(f"Running batch rollouts => {controller_cat} controller: {controller_type}")
     rollout_partial = partial(run_rollout, controller_type=controller_type, model_path=args.model_path, debug=False)
-    results = process_map(rollout_partial, files[SAMPLE_ROLLOUTS:], max_workers=16, chunksize=10)
+    results = []
+    for f in tqdm(files[SAMPLE_ROLLOUTS:]):
+      results.append(rollout_partial(f))
+    # results = process_map(rollout_partial, files[SAMPLE_ROLLOUTS:], max_workers=1, chunksize=1)
     costs += [{'controller': controller_cat, **result[0]} for result in results]
 
   create_report(args.test_controller, args.baseline_controller, sample_rollouts, costs, len(files))

@@ -16,11 +16,29 @@ from pathlib import Path
 class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
     def __init__(self, model_path='models/tinyphysics.onnx', data_path = 'data/00000.csv'):
         self.previous_pred = 0
+        self.policy_history_len = 20
+        self.lookahead_len = 20
         Env.__init__(self)
         TinyPhysicsSimulator.__init__(self, TinyPhysicsModel(model_path, False), data_path, BaseController())
+        state_low = [-1,0,-0.1]
+        state_high = [1,60,0.1]
+        actions_low = [-2]
+        actions_high = [2]
+        preds_low = [-2]
+        preds_high = [2]
         self.observation_space = Box(
-            np.array([0, -1, -0.1, -2, -2]), 
-            np.array([60, 1, 0.1, 2, 2])
+            np.concatenate([
+                np.tile(state_low, self.policy_history_len),
+                np.tile(actions_low, self.policy_history_len),
+                np.tile(preds_low, self.policy_history_len),
+                np.repeat(preds_low+state_low, self.lookahead_len) # future plan
+            ]),
+            np.concatenate([
+                np.tile(state_high, self.policy_history_len),
+                np.tile(actions_high, self.policy_history_len),
+                np.tile(preds_high, self.policy_history_len),
+                np.repeat(preds_high+state_high, self.lookahead_len) # future plan
+            ]),
         )
         self.action_space = Box(-2, 2, (1,))
     
@@ -57,7 +75,15 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
         # if self.step_idx == len(self.target_lataccel_history):
         #     obs = np.zeros(3)
         # else:
-        obs = np.array(list(self.state_history[self.step_idx-1])+[target, self.current_lataccel])
+        # future_lat_accel = futureplan[0][0] if len(futureplan[0])>0 else self.current_lataccel
+        future_plan_array = np.zeros((4,49))
+        future_plan_array[:, :len(futureplan[0])] = futureplan
+        obs = np.concatenate([
+            np.array(self.state_history[-self.policy_history_len:]).flatten(),
+            self.action_history[-self.policy_history_len:],
+            self.current_lataccel_history[-self.policy_history_len:],
+            future_plan_array[:, 0:self.lookahead_len].flatten()
+        ])
 
         lat_accel_cost = np.mean((target - pred)**2)
         jerk_cost = np.mean(((pred-self.previous_pred) / DEL_T)**2)

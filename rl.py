@@ -11,15 +11,18 @@ from typing import Tuple
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 from pathlib import Path
+from random import choice
 
 
 class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
-    def __init__(self, model_path='models/tinyphysics.onnx', data_path = 'data/00000.csv'):
+    def __init__(self, model_path='models/tinyphysics.onnx'):
+        self.model_path = model_path
         self.previous_pred = 0
         self.policy_history_len = 20
         self.lookahead_len = 20
+        data_path = str(choice(list(Path('data').glob('*.csv'))))
+        TinyPhysicsSimulator.__init__(self, TinyPhysicsModel(self.model_path, False), data_path, BaseController())
         Env.__init__(self)
-        TinyPhysicsSimulator.__init__(self, TinyPhysicsModel(model_path, False), data_path, BaseController())
         state_low = [-1,0,-0.1]
         state_high = [1,60,0.1]
         actions_low = [-2]
@@ -99,6 +102,8 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
         return obs, reward, terminated, truncated, info
     
     def reset(self, seed=None):
+        data_path = choice(list(Path('data').glob('*.csv')))
+        self.data=self.get_data(str(data_path))
         TinyPhysicsSimulator.reset(self)
         return self.step(0)[0], dict()
 

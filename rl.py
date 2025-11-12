@@ -31,11 +31,13 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
                 np.tile(state_low, self.policy_history_len),
                 np.tile(actions_low, self.policy_history_len),
                 np.tile(preds_low, self.policy_history_len),
+                np.tile(preds_low, self.policy_history_len),
                 np.repeat(preds_low+state_low, self.lookahead_len) # future plan
             ]),
             np.concatenate([
                 np.tile(state_high, self.policy_history_len),
                 np.tile(actions_high, self.policy_history_len),
+                np.tile(preds_high, self.policy_history_len),
                 np.tile(preds_high, self.policy_history_len),
                 np.repeat(preds_high+state_high, self.lookahead_len) # future plan
             ]),
@@ -82,6 +84,7 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
             np.array(self.state_history[-self.policy_history_len:]).flatten(),
             self.action_history[-self.policy_history_len:],
             self.current_lataccel_history[-self.policy_history_len:],
+            self.target_lataccel_history[-self.policy_history_len:],
             future_plan_array[:, 0:self.lookahead_len].flatten()
         ])
 
@@ -92,14 +95,13 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
         reward = -total_cost
         truncated = self.step_idx >= len(self.data)
         terminated = False
-        done = truncated or terminated
         info = dict()
         return obs, reward, terminated, truncated, info
     
     def reset(self, seed=None):
         TinyPhysicsSimulator.reset(self)
         return self.step(0)[0], dict()
-    
+
 if __name__ == "__main__":
     writer = SummaryWriter()
 

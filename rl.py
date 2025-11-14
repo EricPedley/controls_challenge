@@ -95,7 +95,10 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
         jerk_cost = ((pred-self.previous_pred) / DEL_T)**2
         self.previous_pred = pred
         total_cost = (lat_accel_cost * LAT_ACCEL_COST_MULTIPLIER) + jerk_cost
-        reward = -100*total_cost
+        if self.step_idx < CONTROL_START_IDX:
+            reward = 0
+        else:
+            reward = -total_cost
         truncated = self.step_idx >= len(self.data)
         terminated = False
         info = dict()
@@ -120,5 +123,5 @@ if __name__ == "__main__":
     env = make_vec_env(make_env, n_envs=1)
     model = PPO("MlpPolicy", env, tensorboard_log=experiment_logdir, device='cpu')
         
-    model.learn(total_timesteps=10_000_000)
+    model.learn(total_timesteps=1_000_000)
     model.save(f'{experiment_logdir}/weights')

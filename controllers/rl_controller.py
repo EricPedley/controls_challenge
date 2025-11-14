@@ -7,7 +7,7 @@ class Controller(BaseController):
   A simple PID controller
   """
   def __init__(self,):
-    self.model = PPO.load("/home/miller/code/controls_challenge/runs/2025-11-12_11-43-02/weights.zip", device='cpu')
+    self.model = PPO.load("/home/miller/code/controls_challenge/runs/2025-11-12_15-26-19/weights.zip", device='cpu')
     self.state_history = [(0,0,0)]*20
     self.target_lataccel_history = [0]*20
     self.current_lataccel_history = [0]*20

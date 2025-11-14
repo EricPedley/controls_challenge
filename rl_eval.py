@@ -1,6 +1,6 @@
-from rl import TinyPhysicsEnv, BaseController
+from sb3_train import TinyPhysicsEnv, BaseController
 from controllers.pid import Controller as PIDController
-from controllers.rl_controller import Controller as RLController
+from controllers.sb3 import Controller as RLController
 import numpy as np
 
 def eval_reward_with_controller(env: TinyPhysicsEnv, controller: BaseController):

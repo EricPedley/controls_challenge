@@ -1,18 +1,10 @@
 from tinyphysics import TinyPhysicsModel, TinyPhysicsSimulator, CONTEXT_LENGTH, MAX_ACC_DELTA, CONTROL_START_IDX, STEER_RANGE, State, FuturePlan, COST_END_IDX, LAT_ACCEL_COST_MULTIPLIER , DEL_T
-from stable_baselines3 import PPO
-
-from stable_baselines3.common.env_util import make_vec_env
 import numpy as np
 from gymnasium import Env
 from gymnasium.spaces import Box
 from controllers import BaseController
-from controllers.pid import Controller as PIDController
-from typing import Tuple
-from torch.utils.tensorboard import SummaryWriter
-from datetime import datetime
 from pathlib import Path
 from random import choice
-
 
 class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
     def __init__(self, model_path='models/tinyphysics.onnx'):
@@ -109,19 +101,3 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
         self.data=self.get_data(str(data_path))
         TinyPhysicsSimulator.reset(self)
         return self.step(0)[0], dict()
-
-if __name__ == "__main__":
-    writer = SummaryWriter()
-
-    experiment_logdir = f"runs/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-    Path(experiment_logdir).mkdir(parents=True, exist_ok=True)
-
-
-    def make_env():
-        env = TinyPhysicsEnv()
-        return env
-    env = make_vec_env(make_env, n_envs=1)
-    model = PPO("MlpPolicy", env, tensorboard_log=experiment_logdir, device='cpu')
-        
-    model.learn(total_timesteps=1_000_000)
-    model.save(f'{experiment_logdir}/weights')

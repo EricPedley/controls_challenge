@@ -64,7 +64,7 @@ def train_agent():
     """Train a PPO agent on the altitude control environment"""
     
     # Create environment
-    env = wrap_env(TinyPhysicsEnv())
+    env = wrap_env(TinyPhysicsEnv(num_envs=1000))
     device = env.device
     
     print(f"Environment: AltitudeControlEnv")
@@ -105,7 +105,7 @@ def train_agent():
                 device=device)
     
     # Configure trainer
-    cfg_trainer = {"timesteps": 1_000_000, "headless": True}
+    cfg_trainer = {"timesteps": 1_000_000//env.num_envs, "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
     
     # Start training

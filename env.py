@@ -10,8 +10,8 @@ class TinyPhysicsEnv(Env, TinyPhysicsSimulator):
     def __init__(self, model_path='models/tinyphysics.onnx'):
         self.model_path = model_path
         self.previous_pred = 0
-        self.policy_history_len = 20
-        self.lookahead_len = 20
+        self.policy_history_len = 4
+        self.lookahead_len = 4
         data_path = str(choice(list(Path('data').glob('*.csv'))))
         TinyPhysicsSimulator.__init__(self, TinyPhysicsModel(self.model_path, False), data_path, BaseController())
         Env.__init__(self)

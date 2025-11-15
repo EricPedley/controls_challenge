@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 import pandas as pd
 import onnxruntime as ort
+from line_profiler import profile
 
 class BatchedTinyPhysicsModel:
     """Batched version of TinyPhysicsModel that uses PyTorch tensors and GPU"""
@@ -176,6 +177,7 @@ class TinyPhysicsEnv(VectorEnv):
             rolled = torch.roll(buffer[env_idx], shifts=-idx, dims=0)
             return rolled
     
+    @profile
     def step(self, actions: torch.Tensor):
         """Vectorized step for all environments in parallel"""
         if isinstance(actions, np.ndarray):
@@ -237,11 +239,7 @@ class TinyPhysicsEnv(VectorEnv):
         ], dim=-1)  # (num_envs, context_length, 4)
         
         # Tokenize past predictions
-        past_preds_np = past_preds_batch.cpu().numpy()
-        tokens = self.sim_model.tokenizer.encode(past_preds_np)  # (num_envs, context_length)
-        tokens_torch = torch.from_numpy(tokens).to(self.device)
-
-        past_preds_np = past_preds_batch#.cpu().numpy()
+        past_preds_np = past_preds_batch
         clipped = torch.clip(past_preds_np, LATACCEL_RANGE[0], LATACCEL_RANGE[1])
         tokens_torch = torch.searchsorted(self.tokenizer_bins, clipped, side='left')#.reshape_as(clipped)
         
@@ -293,7 +291,7 @@ class TinyPhysicsEnv(VectorEnv):
             ])
             obs_list.append(obs)
         
-        obs = torch.stack(obs_list)#.cpu().numpy()  # (num_envs, obs_dim)
+        obs = torch.stack(obs_list)# (num_envs, obs_dim)
         
         # Compute rewards
         lat_accel_cost = (targets - pred) ** 2
@@ -308,7 +306,7 @@ class TinyPhysicsEnv(VectorEnv):
             self._reset_index(idx_to_reset)
         
         # Check termination
-        truncated = (self.step_indices >= self.data_lengths)#.cpu().numpy()
+        truncated = (self.step_indices >= self.data_lengths)
         infos = [{} for _ in range(self.num_envs)]
         
         return obs, rewards.reshape((self.num_envs, -1)), terminated.reshape((self.num_envs, -1)), truncated.reshape((self.num_envs, -1)), infos
@@ -377,7 +375,7 @@ class TinyPhysicsEnv(VectorEnv):
             ])
             obs_list.append(obs)
         
-        obs = torch.stack(obs_list)#.cpu().numpy()
+        obs = torch.stack(obs_list)
         infos = [{} for _ in range(self.num_envs)]
         
         return obs, infos

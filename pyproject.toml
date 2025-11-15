@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "line-profiler>=5.0.0",
     "matplotlib==3.8.1",
     "numpy>=1.26.4",
     "onnxruntime>=1.23.2",

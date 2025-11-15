@@ -95,10 +95,12 @@ class BatchedTinyPhysicsModel:
 
 class TinyPhysicsEnv(VectorEnv):
     def __init__(self, num_envs=1, device='cuda'):
+        self.num_agents = 1
         self.num_envs = num_envs
         self.device = device if torch.cuda.is_available() else 'cpu'
         
         self.sim_model = BatchedTinyPhysicsModel('models/tinyphysics.onnx', device=self.device)
+        self.reward_threshold = -1000
         
         self.policy_history_len = 4
         self.lookahead_len = 4
@@ -140,9 +142,12 @@ class TinyPhysicsEnv(VectorEnv):
         
         # Current state
         self.step_indices = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.current_lataccel = torch.zeros(self.num_envs, device=self.device)
-        self.previous_pred = torch.zeros(self.num_envs, device=self.device)
+        self.current_lataccel = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+        self.previous_pred = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
         self.cyclic_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)  # Current position in cyclic buffer
+
+
+        self.tokenizer_bins = torch.linspace(LATACCEL_RANGE[0], LATACCEL_RANGE[1], VOCAB_SIZE,device=self.device)
         
         self.reset()
     
@@ -183,6 +188,7 @@ class TinyPhysicsEnv(VectorEnv):
         for env_index, step_index in enumerate(self.step_indices):
             if step_index >= self.data_tensors[env_index]['roll_lataccel'].shape[0]:
                 self._reset_index(env_index)
+            
         
         # Get current states and targets for all envs
         states = torch.stack([
@@ -234,10 +240,14 @@ class TinyPhysicsEnv(VectorEnv):
         past_preds_np = past_preds_batch.cpu().numpy()
         tokens = self.sim_model.tokenizer.encode(past_preds_np)  # (num_envs, context_length)
         tokens_torch = torch.from_numpy(tokens).to(self.device)
+
+        past_preds_np = past_preds_batch#.cpu().numpy()
+        clipped = torch.clip(past_preds_np, LATACCEL_RANGE[0], LATACCEL_RANGE[1])
+        tokens_torch = torch.searchsorted(self.tokenizer_bins, clipped, side='left')#.reshape_as(clipped)
         
         # Batched model prediction
         pred_tokens = self.sim_model.predict_batched(model_states, tokens_torch, temperature=0.8)
-        pred = torch.from_numpy(self.sim_model.tokenizer.decode(pred_tokens.cpu().numpy())).to(self.device)
+        pred = self.tokenizer_bins[pred_tokens]
         
         # Clip predictions by MAX_ACC_DELTA
         pred = torch.clamp(pred, self.current_lataccel - MAX_ACC_DELTA, self.current_lataccel + MAX_ACC_DELTA)
@@ -283,7 +293,7 @@ class TinyPhysicsEnv(VectorEnv):
             ])
             obs_list.append(obs)
         
-        obs = torch.stack(obs_list).cpu().numpy()  # (num_envs, obs_dim)
+        obs = torch.stack(obs_list)#.cpu().numpy()  # (num_envs, obs_dim)
         
         # Compute rewards
         lat_accel_cost = (targets - pred) ** 2
@@ -292,14 +302,16 @@ class TinyPhysicsEnv(VectorEnv):
         total_cost = (lat_accel_cost * LAT_ACCEL_COST_MULTIPLIER) + jerk_cost
         
         rewards = torch.where(self.step_indices > CONTROL_START_IDX, -total_cost, torch.zeros_like(total_cost))
-        rewards = rewards.cpu().numpy()
+
+        terminated = rewards < self.reward_threshold
+        for idx_to_reset in torch.nonzero(terminated):
+            self._reset_index(idx_to_reset)
         
         # Check termination
-        truncated = (self.step_indices >= self.data_lengths).cpu().numpy()
-        terminated = np.zeros(self.num_envs, dtype=bool)
+        truncated = (self.step_indices >= self.data_lengths)#.cpu().numpy()
         infos = [{} for _ in range(self.num_envs)]
         
-        return obs, rewards, terminated, truncated, infos
+        return obs, rewards.reshape((self.num_envs, -1)), terminated.reshape((self.num_envs, -1)), truncated.reshape((self.num_envs, -1)), infos
     
     def _reset_index(self, env_index: int, seed=None):
         """Reset a specific environment"""
@@ -324,7 +336,7 @@ class TinyPhysicsEnv(VectorEnv):
             self.current_lataccel_history[env_index, t] = self.data_tensors[env_index]['target_lataccel'][t]
             self.target_lataccel_history[env_index, t] = self.data_tensors[env_index]['target_lataccel'][t]
         
-        self.current_lataccel[env_index] = self.data_tensors[env_index]['target_lataccel'][CONTEXT_LENGTH - 1]
+        self.current_lataccel[env_index] = self.data_tensors[env_index]['target_lataccel'][CONTEXT_LENGTH - 1].type_as(self.current_lataccel) # TODO: figure out why the type cast here is even necessary
         self.previous_pred[env_index] = self.current_lataccel[env_index]
     
     def reset(self, seed=None, options=None):
@@ -365,7 +377,7 @@ class TinyPhysicsEnv(VectorEnv):
             ])
             obs_list.append(obs)
         
-        obs = torch.stack(obs_list).cpu().numpy()
+        obs = torch.stack(obs_list)#.cpu().numpy()
         infos = [{} for _ in range(self.num_envs)]
         
         return obs, infos

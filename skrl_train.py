@@ -12,7 +12,6 @@ from skrl.resources.schedulers.torch import KLAdaptiveRL
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 from env import TinyPhysicsEnv
-from skrl.envs.wrappers.torch import wrap_env
 
 
 # Set random seed for reproducibility
@@ -64,7 +63,7 @@ def train_agent():
     """Train a PPO agent on the altitude control environment"""
     
     # Create environment
-    env = wrap_env(TinyPhysicsEnv(num_envs=10, device='cpu'))
+    env = TinyPhysicsEnv(num_envs=10, device='cuda')
     device = env.device
     
     print(f"Environment: AltitudeControlEnv")

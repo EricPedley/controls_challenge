@@ -131,9 +131,11 @@ class TinyPhysicsEnv(VectorEnv):
         )
         self.action_space = Box(-2, 2, (1,))
         
-        # Load all data upfront as tensors
-        self.data_tensors = [None] * self.num_envs  # Will hold dict of tensors per env
+        # Load all data upfront as tensors - shape: (num_envs, max_timesteps)
+        # Structure: data_tensors[field_name][env_idx, timestep]
+        self.data_tensors = {}
         self.data_lengths = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.max_data_length = 0  # Will be set during first reset
         
         # History buffers (cyclic) - shape: (num_envs, context_length, ...)
         self.state_history = torch.zeros(self.num_envs, CONTEXT_LENGTH, 3, device=self.device)  # [roll_lataccel, v_ego, a_ego]
@@ -145,7 +147,6 @@ class TinyPhysicsEnv(VectorEnv):
         self.step_indices = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.current_lataccel = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
         self.previous_pred = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
-        self.cyclic_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)  # Current position in cyclic buffer
 
 
         self.tokenizer_bins = torch.linspace(LATACCEL_RANGE[0], LATACCEL_RANGE[1], VOCAB_SIZE,device=self.device)
@@ -153,30 +154,59 @@ class TinyPhysicsEnv(VectorEnv):
         
         self.reset()
     
-    def _load_data_to_tensors(self, data_path: str):
-        """Load CSV data and convert to tensors on device"""
+    def _load_data_to_tensors(self, data_path: str, env_index: int):
+        """Load CSV data and store in shared tensors at env_index"""
         df = pd.read_csv(data_path)
         ACC_G = 9.81
+        data_len = len(df)
         
-        data_dict = {
-            'roll_lataccel': torch.tensor(np.sin(df['roll'].values) * ACC_G, dtype=torch.float32, device=self.device),
-            'v_ego': torch.tensor(df['vEgo'].values, dtype=torch.float32, device=self.device),
-            'a_ego': torch.tensor(df['aEgo'].values, dtype=torch.float32, device=self.device),
-            'target_lataccel': torch.tensor(df['targetLateralAcceleration'].values, dtype=torch.float32, device=self.device),
-            'steer_command': torch.tensor(-df['steerCommand'].values, dtype=torch.float32, device=self.device)  # right-positive
-        }
-        return data_dict, len(df)
+        # Initialize data tensors on first load
+        if not self.data_tensors:
+            # Find max length across all data files to pre-allocate
+            max_len = max(len(pd.read_csv(str(p))) for p in self.all_data_paths[:min(10, len(self.all_data_paths))])
+            max_len = max(max_len, data_len)
+            self.max_data_length = max_len
+            
+            # Pre-allocate tensors: shape (num_envs, max_timesteps)
+            self.data_tensors = {
+                'roll_lataccel': torch.zeros(self.num_envs, max_len, dtype=torch.float32, device=self.device),
+                'v_ego': torch.zeros(self.num_envs, max_len, dtype=torch.float32, device=self.device),
+                'a_ego': torch.zeros(self.num_envs, max_len, dtype=torch.float32, device=self.device),
+                'target_lataccel': torch.zeros(self.num_envs, max_len, dtype=torch.float32, device=self.device),
+                'steer_command': torch.zeros(self.num_envs, max_len, dtype=torch.float32, device=self.device),
+            }
+        
+        # If data is longer than allocated, expand tensors
+        if data_len > self.data_tensors['roll_lataccel'].shape[1]:
+            new_max = data_len
+            for key in self.data_tensors:
+                old_tensor = self.data_tensors[key]
+                new_tensor = torch.zeros(self.num_envs, new_max, dtype=torch.float32, device=self.device)
+                new_tensor[:, :old_tensor.shape[1]] = old_tensor
+                self.data_tensors[key] = new_tensor
+            self.max_data_length = new_max
+        
+        # Load data into the env_index row
+        self.data_tensors['roll_lataccel'][env_index, :data_len] = torch.tensor(
+            np.sin(df['roll'].values) * ACC_G, dtype=torch.float32, device=self.device)
+        self.data_tensors['v_ego'][env_index, :data_len] = torch.tensor(
+            df['vEgo'].values, dtype=torch.float32, device=self.device)
+        self.data_tensors['a_ego'][env_index, :data_len] = torch.tensor(
+            df['aEgo'].values, dtype=torch.float32, device=self.device)
+        self.data_tensors['target_lataccel'][env_index, :data_len] = torch.tensor(
+            df['targetLateralAcceleration'].values, dtype=torch.float32, device=self.device)
+        self.data_tensors['steer_command'][env_index, :data_len] = torch.tensor(
+            -df['steerCommand'].values, dtype=torch.float32, device=self.device)
+        
+        return data_len
     
-    def _get_cyclic_history_view(self, buffer, env_idx):
-        """Get properly ordered view of cyclic buffer for a specific env"""
-        # Returns the last CONTEXT_LENGTH items in the right order
-        idx = self.cyclic_idx[env_idx].item()
-        if buffer.dim() == 2:  # 1D history per env (actions, lataccels)
-            rolled = torch.roll(buffer[env_idx], shifts=-idx, dims=0)
-            return rolled
-        else:  # 2D history per env (states)
-            rolled = torch.roll(buffer[env_idx], shifts=-idx, dims=0)
-            return rolled
+    def _shift_history_left(self):
+        """Shift all history buffers left by 1, dropping oldest entry"""
+        # Use copy_ for in-place operation without creating intermediate tensors
+        self.state_history[:, :-1].copy_(self.state_history[:, 1:])
+        self.action_history[:, :-1].copy_(self.action_history[:, 1:])
+        self.current_lataccel_history[:, :-1].copy_(self.current_lataccel_history[:, 1:])
+        self.target_lataccel_history[:, :-1].copy_(self.target_lataccel_history[:, 1:])
     
     @profile
     def step(self, actions: torch.Tensor):
@@ -189,48 +219,36 @@ class TinyPhysicsEnv(VectorEnv):
             actions = actions.squeeze(-1)  # (num_envs,)
         
         for env_index, step_index in enumerate(self.step_indices):
-            if step_index >= self.data_tensors[env_index]['roll_lataccel'].shape[0]:
+            if step_index >= self.data_lengths[env_index]:
                 self._reset_index(env_index)
             
         
-        # Get current states and targets for all envs (vectorized)
-        states = torch.stack([
-            torch.stack([
-                self.data_tensors[i]['roll_lataccel'][self.step_indices[i]],
-                self.data_tensors[i]['v_ego'][self.step_indices[i]],
-                self.data_tensors[i]['a_ego'][self.step_indices[i]]
-            ])
-            for i in range(self.num_envs)
-        ])  # (num_envs, 3)
+        # Get current states and targets for all envs (fully vectorized!)
+        targets = self.data_tensors['target_lataccel'][self.env_indices, self.step_indices]
         
-        targets = torch.stack([
-            self.data_tensors[i]['target_lataccel'][self.step_indices[i]]
-            for i in range(self.num_envs)
-        ])  # (num_envs,)
+        # Shift history buffers (sliding window - no roll needed!)
+        self._shift_history_left()
         
-        # Update cyclic buffers (vectorized)
-        write_idx = self.cyclic_idx % CONTEXT_LENGTH
-        self.state_history[self.env_indices, write_idx] = states
-        self.target_lataccel_history[self.env_indices, write_idx] = targets
+        # Update buffers at the end (newest entry) - fully vectorized!
+        self.state_history[:, -1, 0] = self.data_tensors['roll_lataccel'][self.env_indices, self.step_indices]
+        self.state_history[:, -1, 1] = self.data_tensors['v_ego'][self.env_indices, self.step_indices]
+        self.state_history[:, -1, 2] = self.data_tensors['a_ego'][self.env_indices, self.step_indices]
+        self.target_lataccel_history[:, -1] = targets
         
         # Determine actions (use logged actions before CONTROL_START_IDX)
         before_control = self.step_indices < CONTROL_START_IDX
-        logged_actions = torch.stack([
-            self.data_tensors[i]['steer_command'][self.step_indices[i]]
-            for i in range(self.num_envs)
-        ])
+        logged_actions = self.data_tensors['steer_command'][self.env_indices, self.step_indices]
         actions = torch.where(before_control, logged_actions, actions)
         actions = torch.clamp(actions, STEER_RANGE[0], STEER_RANGE[1])
         
-        # Update action history (vectorized)
-        self.action_history[self.env_indices, write_idx] = actions
+        # Update action history
+        self.action_history[:, -1] = actions
         
-        # Prepare batched input for model (vectorized roll)
-        # Get ordered history for each env - batch the roll operation
-        roll_amounts = -(self.cyclic_idx % CONTEXT_LENGTH)
-        states_batch = torch.stack([torch.roll(self.state_history[i], shifts=roll_amounts[i].item(), dims=0) for i in range(self.num_envs)])
-        actions_batch = torch.stack([torch.roll(self.action_history[i], shifts=roll_amounts[i].item(), dims=0) for i in range(self.num_envs)])
-        past_preds_batch = torch.stack([torch.roll(self.current_lataccel_history[i], shifts=roll_amounts[i].item(), dims=0) for i in range(self.num_envs)])
+        # Prepare batched input for model (no roll needed - already in order!)
+        # No clone needed since we're not modifying these
+        states_batch = self.state_history
+        actions_batch = self.action_history
+        past_preds_batch = self.current_lataccel_history
         
         # Combine into model input: (num_envs, context_length, 4) = [action, roll_lataccel, v_ego, a_ego]
         model_states = torch.cat([
@@ -253,34 +271,32 @@ class TinyPhysicsEnv(VectorEnv):
         # Update current lataccel (use pred after CONTROL_START_IDX, else use target)
         self.current_lataccel = torch.where(before_control, targets, pred)
         
-        # Update current lataccel history (vectorized)
-        self.current_lataccel_history[self.env_indices, write_idx] = self.current_lataccel
+        # Update current lataccel history
+        self.current_lataccel_history[:, -1] = self.current_lataccel
         
-        # Increment step indices and cyclic idx
+        # Increment step indices
         self.step_indices += 1
-        self.cyclic_idx += 1
         
-        # Build observations (optimized)
+        # Build observations (no roll needed!)
         obs_list = []
-        roll_amounts = -(self.cyclic_idx % CONTEXT_LENGTH)
         for i in range(self.num_envs):
-            # Get last policy_history_len items from cyclic buffers (inline roll to reduce overhead)
-            state_hist = torch.roll(self.state_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
-            action_hist = torch.roll(self.action_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
-            current_lataccel_hist = torch.roll(self.current_lataccel_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
-            target_lataccel_hist = torch.roll(self.target_lataccel_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
+            # Get last policy_history_len items (already in correct order)
+            state_hist = self.state_history[i, -self.policy_history_len:]
+            action_hist = self.action_history[i, -self.policy_history_len:]
+            current_lataccel_hist = self.current_lataccel_history[i, -self.policy_history_len:]
+            target_lataccel_hist = self.target_lataccel_history[i, -self.policy_history_len:]
             
-            # Get future plan (optimized indexing)
+            # Get future plan (optimized indexing with new data structure)
             start_idx = self.step_indices[i].item()  # Convert to Python int once
             end_idx = min(start_idx + FUTURE_PLAN_STEPS, self.data_lengths[i].item())
             plan_len = end_idx - start_idx
             
             future_plan = torch.zeros(4, FUTURE_PLAN_STEPS, device=self.device)
             if plan_len > 0:
-                future_plan[0, :plan_len] = self.data_tensors[i]['target_lataccel'][start_idx:end_idx]
-                future_plan[1, :plan_len] = self.data_tensors[i]['roll_lataccel'][start_idx:end_idx]
-                future_plan[2, :plan_len] = self.data_tensors[i]['v_ego'][start_idx:end_idx]
-                future_plan[3, :plan_len] = self.data_tensors[i]['a_ego'][start_idx:end_idx]
+                future_plan[0, :plan_len] = self.data_tensors['target_lataccel'][i, start_idx:end_idx]
+                future_plan[1, :plan_len] = self.data_tensors['roll_lataccel'][i, start_idx:end_idx]
+                future_plan[2, :plan_len] = self.data_tensors['v_ego'][i, start_idx:end_idx]
+                future_plan[3, :plan_len] = self.data_tensors['a_ego'][i, start_idx:end_idx]
             
             obs = torch.cat([
                 state_hist.flatten(),
@@ -318,23 +334,21 @@ class TinyPhysicsEnv(VectorEnv):
             np.random.seed(seed + env_index)
         
         data_path = np.random.choice(self.all_data_paths)
-        self.data_tensors[env_index], data_len = self._load_data_to_tensors(str(data_path))
+        data_len = self._load_data_to_tensors(str(data_path), env_index)
         self.data_lengths[env_index] = data_len
         
         # Reset to CONTEXT_LENGTH
         self.step_indices[env_index] = CONTEXT_LENGTH
-        self.cyclic_idx[env_index] = CONTEXT_LENGTH
         
-        # Initialize history from data
-        for t in range(CONTEXT_LENGTH):
-            self.state_history[env_index, t, 0] = self.data_tensors[env_index]['roll_lataccel'][t]
-            self.state_history[env_index, t, 1] = self.data_tensors[env_index]['v_ego'][t]
-            self.state_history[env_index, t, 2] = self.data_tensors[env_index]['a_ego'][t]
-            self.action_history[env_index, t] = self.data_tensors[env_index]['steer_command'][t]
-            self.current_lataccel_history[env_index, t] = self.data_tensors[env_index]['target_lataccel'][t]
-            self.target_lataccel_history[env_index, t] = self.data_tensors[env_index]['target_lataccel'][t]
+        # Initialize history from data (vectorized with new data structure)
+        self.state_history[env_index, :, 0] = self.data_tensors['roll_lataccel'][env_index, :CONTEXT_LENGTH]
+        self.state_history[env_index, :, 1] = self.data_tensors['v_ego'][env_index, :CONTEXT_LENGTH]
+        self.state_history[env_index, :, 2] = self.data_tensors['a_ego'][env_index, :CONTEXT_LENGTH]
+        self.action_history[env_index, :] = self.data_tensors['steer_command'][env_index, :CONTEXT_LENGTH]
+        self.current_lataccel_history[env_index, :] = self.data_tensors['target_lataccel'][env_index, :CONTEXT_LENGTH]
+        self.target_lataccel_history[env_index, :] = self.data_tensors['target_lataccel'][env_index, :CONTEXT_LENGTH]
         
-        self.current_lataccel[env_index] = self.data_tensors[env_index]['target_lataccel'][CONTEXT_LENGTH - 1].type_as(self.current_lataccel) # TODO: figure out why the type cast here is even necessary
+        self.current_lataccel[env_index] = self.data_tensors['target_lataccel'][env_index, CONTEXT_LENGTH - 1]
         self.previous_pred[env_index] = self.current_lataccel[env_index]
     
     def reset(self, seed=None, options=None):
@@ -354,17 +368,17 @@ class TinyPhysicsEnv(VectorEnv):
             current_lataccel_hist = self.current_lataccel_history[i, -self.policy_history_len:]
             target_lataccel_hist = self.target_lataccel_history[i, -self.policy_history_len:]
             
-            # Get future plan
+            # Get future plan (with new data structure)
             start_idx = self.step_indices[i]
             end_idx = min(start_idx + FUTURE_PLAN_STEPS, self.data_lengths[i])
             plan_len = end_idx - start_idx
             
             future_plan = torch.zeros(4, FUTURE_PLAN_STEPS, device=self.device)
             if plan_len > 0:
-                future_plan[0, :plan_len] = self.data_tensors[i]['target_lataccel'][start_idx:end_idx]
-                future_plan[1, :plan_len] = self.data_tensors[i]['roll_lataccel'][start_idx:end_idx]
-                future_plan[2, :plan_len] = self.data_tensors[i]['v_ego'][start_idx:end_idx]
-                future_plan[3, :plan_len] = self.data_tensors[i]['a_ego'][start_idx:end_idx]
+                future_plan[0, :plan_len] = self.data_tensors['target_lataccel'][i, start_idx:end_idx]
+                future_plan[1, :plan_len] = self.data_tensors['roll_lataccel'][i, start_idx:end_idx]
+                future_plan[2, :plan_len] = self.data_tensors['v_ego'][i, start_idx:end_idx]
+                future_plan[3, :plan_len] = self.data_tensors['a_ego'][i, start_idx:end_idx]
             
             obs = torch.cat([
                 state_hist.flatten(),

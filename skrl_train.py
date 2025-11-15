@@ -104,7 +104,7 @@ def train_agent():
                 device=device)
     
     # Configure trainer
-    cfg_trainer = {"timesteps": 10_000//env.num_envs, "headless": True}
+    cfg_trainer = {"timesteps": 100_000_000//env.num_envs, "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
     
     # Start training

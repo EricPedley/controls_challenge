@@ -101,7 +101,7 @@ class TinyPhysicsEnv(VectorEnv):
         self.device = device if torch.cuda.is_available() else 'cpu'
         
         self.sim_model = BatchedTinyPhysicsModel('models/tinyphysics.onnx', device=self.device)
-        self.reward_threshold = -1000
+        self.reward_threshold = -100
         
         self.policy_history_len = 4
         self.lookahead_len = 4
@@ -320,6 +320,8 @@ class TinyPhysicsEnv(VectorEnv):
         terminated = rewards < self.reward_threshold
         for idx_to_reset in torch.nonzero(terminated):
             self._reset_index(idx_to_reset)
+        
+        rewards[~terminated] += 100
         
         # Check termination
         truncated = (self.step_indices >= self.data_lengths)

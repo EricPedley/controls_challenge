@@ -149,6 +149,7 @@ class TinyPhysicsEnv(VectorEnv):
 
 
         self.tokenizer_bins = torch.linspace(LATACCEL_RANGE[0], LATACCEL_RANGE[1], VOCAB_SIZE,device=self.device)
+        self.env_indices = torch.arange(self.num_envs, device=self.device)  # Cache for vectorized indexing
         
         self.reset()
     
@@ -192,13 +193,13 @@ class TinyPhysicsEnv(VectorEnv):
                 self._reset_index(env_index)
             
         
-        # Get current states and targets for all envs
+        # Get current states and targets for all envs (vectorized)
         states = torch.stack([
             torch.stack([
                 self.data_tensors[i]['roll_lataccel'][self.step_indices[i]],
                 self.data_tensors[i]['v_ego'][self.step_indices[i]],
                 self.data_tensors[i]['a_ego'][self.step_indices[i]]
-            ], dim=0)
+            ])
             for i in range(self.num_envs)
         ])  # (num_envs, 3)
         
@@ -207,11 +208,10 @@ class TinyPhysicsEnv(VectorEnv):
             for i in range(self.num_envs)
         ])  # (num_envs,)
         
-        # Update cyclic buffers
+        # Update cyclic buffers (vectorized)
         write_idx = self.cyclic_idx % CONTEXT_LENGTH
-        for i in range(self.num_envs):
-            self.state_history[i, write_idx[i]] = states[i]
-            self.target_lataccel_history[i, write_idx[i]] = targets[i]
+        self.state_history[self.env_indices, write_idx] = states
+        self.target_lataccel_history[self.env_indices, write_idx] = targets
         
         # Determine actions (use logged actions before CONTROL_START_IDX)
         before_control = self.step_indices < CONTROL_START_IDX
@@ -222,15 +222,15 @@ class TinyPhysicsEnv(VectorEnv):
         actions = torch.where(before_control, logged_actions, actions)
         actions = torch.clamp(actions, STEER_RANGE[0], STEER_RANGE[1])
         
-        # Update action history
-        for i in range(self.num_envs):
-            self.action_history[i, write_idx[i]] = actions[i]
+        # Update action history (vectorized)
+        self.action_history[self.env_indices, write_idx] = actions
         
-        # Prepare batched input for model
-        # Get ordered history for each env
-        states_batch = torch.stack([self._get_cyclic_history_view(self.state_history, i) for i in range(self.num_envs)])
-        actions_batch = torch.stack([self._get_cyclic_history_view(self.action_history, i) for i in range(self.num_envs)])
-        past_preds_batch = torch.stack([self._get_cyclic_history_view(self.current_lataccel_history, i) for i in range(self.num_envs)])
+        # Prepare batched input for model (vectorized roll)
+        # Get ordered history for each env - batch the roll operation
+        roll_amounts = -(self.cyclic_idx % CONTEXT_LENGTH)
+        states_batch = torch.stack([torch.roll(self.state_history[i], shifts=roll_amounts[i].item(), dims=0) for i in range(self.num_envs)])
+        actions_batch = torch.stack([torch.roll(self.action_history[i], shifts=roll_amounts[i].item(), dims=0) for i in range(self.num_envs)])
+        past_preds_batch = torch.stack([torch.roll(self.current_lataccel_history[i], shifts=roll_amounts[i].item(), dims=0) for i in range(self.num_envs)])
         
         # Combine into model input: (num_envs, context_length, 4) = [action, roll_lataccel, v_ego, a_ego]
         model_states = torch.cat([
@@ -253,26 +253,26 @@ class TinyPhysicsEnv(VectorEnv):
         # Update current lataccel (use pred after CONTROL_START_IDX, else use target)
         self.current_lataccel = torch.where(before_control, targets, pred)
         
-        # Update current lataccel history
-        for i in range(self.num_envs):
-            self.current_lataccel_history[i, write_idx[i]] = self.current_lataccel[i]
+        # Update current lataccel history (vectorized)
+        self.current_lataccel_history[self.env_indices, write_idx] = self.current_lataccel
         
         # Increment step indices and cyclic idx
         self.step_indices += 1
         self.cyclic_idx += 1
         
-        # Build observations
+        # Build observations (optimized)
         obs_list = []
+        roll_amounts = -(self.cyclic_idx % CONTEXT_LENGTH)
         for i in range(self.num_envs):
-            # Get last policy_history_len items from cyclic buffers
-            state_hist = self._get_cyclic_history_view(self.state_history, i)[-self.policy_history_len:]
-            action_hist = self._get_cyclic_history_view(self.action_history, i)[-self.policy_history_len:]
-            current_lataccel_hist = self._get_cyclic_history_view(self.current_lataccel_history, i)[-self.policy_history_len:]
-            target_lataccel_hist = self._get_cyclic_history_view(self.target_lataccel_history, i)[-self.policy_history_len:]
+            # Get last policy_history_len items from cyclic buffers (inline roll to reduce overhead)
+            state_hist = torch.roll(self.state_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
+            action_hist = torch.roll(self.action_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
+            current_lataccel_hist = torch.roll(self.current_lataccel_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
+            target_lataccel_hist = torch.roll(self.target_lataccel_history[i], shifts=roll_amounts[i].item(), dims=0)[-self.policy_history_len:]
             
-            # Get future plan
-            start_idx = self.step_indices[i]
-            end_idx = min(start_idx + FUTURE_PLAN_STEPS, self.data_lengths[i])
+            # Get future plan (optimized indexing)
+            start_idx = self.step_indices[i].item()  # Convert to Python int once
+            end_idx = min(start_idx + FUTURE_PLAN_STEPS, self.data_lengths[i].item())
             plan_len = end_idx - start_idx
             
             future_plan = torch.zeros(4, FUTURE_PLAN_STEPS, device=self.device)

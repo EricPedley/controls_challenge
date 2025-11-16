@@ -3,6 +3,7 @@
 Example training script for the AltitudeControlEnv using skrl
 """
 
+import argparse
 import torch
 import torch.nn as nn
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
@@ -58,7 +59,7 @@ class Value(DeterministicMixin, Model):
     def compute(self, inputs, role):
         return self.net(inputs["states"]), {}
 
-def make_env_and_agent(device='cuda'):
+def make_env_and_agent(device='cuda', load_weights=None):
     # Create environment
     env = TinyPhysicsEnv(num_envs=100, device=device)
     device = env.device
@@ -99,13 +100,15 @@ def make_env_and_agent(device='cuda'):
                 observation_space=env.observation_space,
                 action_space=env.action_space,
                 device=device)
+    if load_weights is not None:
+        agent.load(load_weights)
     
     return env, agent
 
-def train_agent():
+def train_agent(checkpoint_path=None):
     """Train a PPO agent on the altitude control environment"""
     
-    env, agent = make_env_and_agent()
+    env, agent = make_env_and_agent(load_weights=checkpoint_path)
     
     # Configure trainer
     cfg_trainer = {"timesteps": 1_000_000_000//env.num_envs, "headless": True}
@@ -147,4 +150,9 @@ def test_agent(env, agent, num_episodes=5):
 
 
 if __name__ == "__main__":
-    train_agent()
+    parser = argparse.ArgumentParser(description="Train a PPO agent on the TinyPhysics environment")
+    parser.add_argument("--checkpoint", type=str, default=None, 
+                        help="Path to checkpoint to resume training from")
+    args = parser.parse_args()
+    
+    train_agent(checkpoint_path=args.checkpoint)

@@ -12,7 +12,7 @@ class Controller(BaseController):
   def __init__(self,):
     _env, self.agent = make_env_and_agent(device='cpu')
 
-    self.agent.load('/home/miller/code/controls_challenge/runs/25-11-15_18-26-33-859891_PPO/checkpoints/best_agent.pt')
+    self.agent.load('/home/miller/code/controls_challenge/runs/25-11-16_11-27-17-690250_PPO/checkpoints/best_agent.pt')
     self.agent._random_timesteps=-1
     self.state_history = [(0,0,0)]*4
     self.target_lataccel_history = [0]*4

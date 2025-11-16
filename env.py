@@ -199,10 +199,10 @@ class TinyPhysicsEnv(VectorEnv):
     def _shift_history_left(self):
         """Shift all history buffers left by 1, dropping oldest entry"""
         # Use copy_ for in-place operation without creating intermediate tensors
-        self.state_history[:, :-1] = (self.state_history[:, 1:])
-        self.action_history[:, :-1] = (self.action_history[:, 1:])
-        self.current_lataccel_history[:, :-1] = (self.current_lataccel_history[:, 1:])
-        self.target_lataccel_history[:, :-1] = (self.target_lataccel_history[:, 1:])
+        self.state_history[:, :-1] = (self.state_history[:, 1:].clone())
+        self.action_history[:, :-1] = (self.action_history[:, 1:].clone())
+        self.current_lataccel_history[:, :-1] = (self.current_lataccel_history[:, 1:].clone())
+        self.target_lataccel_history[:, :-1] = (self.target_lataccel_history[:, 1:].clone())
     
     # @profile
     @torch.compile

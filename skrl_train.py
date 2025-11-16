@@ -87,7 +87,7 @@ def make_env_and_agent(device='cuda'):
     cfg = PPO_DEFAULT_CONFIG.copy()
     cfg["rollouts"] = mem_size
     cfg["learning_epochs"] = 10
-    cfg["learning_rate"] = 3e-4
+    cfg["learning_rate"] = 1e-4
     cfg["mini_batches"] = 64
     cfg["value_loss_scale"] = 0.5
     cfg["entropy_loss_scale"] = 1.0
@@ -108,7 +108,7 @@ def train_agent():
     env, agent = make_env_and_agent()
     
     # Configure trainer
-    cfg_trainer = {"timesteps": 100_000_000//env.num_envs, "headless": True}
+    cfg_trainer = {"timesteps": 1_000_000_000//env.num_envs, "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
     
     # Start training

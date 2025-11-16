@@ -199,10 +199,10 @@ class TinyPhysicsEnv(VectorEnv):
     def _shift_history_left(self):
         """Shift all history buffers left by 1, dropping oldest entry"""
         # Use copy_ for in-place operation without creating intermediate tensors
-        self.state_history[:, :-1].copy_(self.state_history[:, 1:])
-        self.action_history[:, :-1].copy_(self.action_history[:, 1:])
-        self.current_lataccel_history[:, :-1].copy_(self.current_lataccel_history[:, 1:])
-        self.target_lataccel_history[:, :-1].copy_(self.target_lataccel_history[:, 1:])
+        self.state_history[:, :-1] = (self.state_history[:, 1:])
+        self.action_history[:, :-1] = (self.action_history[:, 1:])
+        self.current_lataccel_history[:, :-1] = (self.current_lataccel_history[:, 1:])
+        self.target_lataccel_history[:, :-1] = (self.target_lataccel_history[:, 1:])
     
     # @profile
     @torch.compile
@@ -220,9 +220,6 @@ class TinyPhysicsEnv(VectorEnv):
         step_indices_cpu = self.step_indices.tolist()
         env_data_lengths_cpu = self.env_data_lengths.tolist()
         
-        for env_index, step_index in enumerate(step_indices_cpu):
-            if step_index >= env_data_lengths_cpu[env_index]:
-                self._reset_index(env_index)
             
         
         # Get current states and targets for all envs (fully vectorized!)
@@ -276,9 +273,6 @@ class TinyPhysicsEnv(VectorEnv):
         # Update current lataccel history
         self.current_lataccel_history[:, -1] = self.current_lataccel
         
-        # Increment step indices
-        self.step_indices += 1
-        
         # Build observations (no roll needed!)
         obs_list = []
         for i in range(self.num_envs):
@@ -294,15 +288,14 @@ class TinyPhysicsEnv(VectorEnv):
             end_idx = min(start_idx + self.lookahead_len, env_data_lengths_cpu[i])
             plan_len = end_idx - start_idx
             
+            future_plan = torch.zeros(4, self.lookahead_len, device=self.device)
             if plan_len > 0:
-                future_plan = torch.stack([
+                future_plan[:, :plan_len] = torch.stack([
                     self.data_tensors['target_lataccel'][traj_idx, start_idx:end_idx],
                     self.data_tensors['roll_lataccel'][traj_idx, start_idx:end_idx],
                     self.data_tensors['v_ego'][traj_idx, start_idx:end_idx],
                     self.data_tensors['a_ego'][traj_idx, start_idx:end_idx]
                 ])
-            else:
-                future_plan = torch.zeros(4, self.lookahead_len, device=self.device)
             
             obs = torch.cat([
                 state_hist.flatten(),
@@ -320,17 +313,25 @@ class TinyPhysicsEnv(VectorEnv):
         jerk_cost = ((pred - self.previous_pred) / DEL_T) ** 2
         self.previous_pred = pred.clone()
         total_cost = (lat_accel_cost * LAT_ACCEL_COST_MULTIPLIER) + jerk_cost
+
         
         rewards = torch.where(self.step_indices > CONTROL_START_IDX, -total_cost, torch.zeros_like(total_cost))
 
-        terminated = rewards < self.reward_threshold
-        for idx_to_reset in torch.nonzero(terminated):
-            self._reset_index(idx_to_reset)
+
+        # Increment step indices
+        self.step_indices += 1
+        truncated = torch.zeros_like(rewards, dtype=torch.bool)
+        for env_index, step_index in enumerate(step_indices_cpu):
+            if step_index+1 >= env_data_lengths_cpu[env_index]:
+                self._reset_index(env_index)
+                truncated[env_index] = 1
+
+        terminated = torch.zeros_like(rewards, dtype=torch.bool)
+        # terminated = rewards < self.reward_threshold
+        # for idx_to_reset in torch.nonzero(terminated):
+        #     self._reset_index(idx_to_reset)
         
-        rewards[~terminated] += 100
-        
-        # Check termination
-        truncated = (self.step_indices >= self.env_data_lengths)
+        rewards[~terminated & ~truncated] += 100
         infos = [{} for _ in range(self.num_envs)]
         
         return obs, rewards.reshape((self.num_envs, -1)), terminated.reshape((self.num_envs, -1)), truncated.reshape((self.num_envs, -1)), infos

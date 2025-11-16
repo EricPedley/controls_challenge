@@ -58,12 +58,9 @@ class Value(DeterministicMixin, Model):
     def compute(self, inputs, role):
         return self.net(inputs["states"]), {}
 
-
-def train_agent():
-    """Train a PPO agent on the altitude control environment"""
-    
+def make_env_and_agent(device='cuda'):
     # Create environment
-    env = TinyPhysicsEnv(num_envs=100, device='cuda')
+    env = TinyPhysicsEnv(num_envs=100, device=device)
     device = env.device
     
     print(f"Environment: AltitudeControlEnv")
@@ -102,6 +99,13 @@ def train_agent():
                 observation_space=env.observation_space,
                 action_space=env.action_space,
                 device=device)
+    
+    return env, agent
+
+def train_agent():
+    """Train a PPO agent on the altitude control environment"""
+    
+    env, agent = make_env_and_agent()
     
     # Configure trainer
     cfg_trainer = {"timesteps": 100_000_000//env.num_envs, "headless": True}

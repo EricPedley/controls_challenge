@@ -3,6 +3,7 @@ import numpy as np
 from gymnasium.vector import VectorEnv
 from gymnasium.spaces import Box
 from controllers import BaseController
+from controllers.pid import Controller as PIDController
 from pathlib import Path
 import torch
 import pandas as pd
@@ -130,7 +131,10 @@ class TinyPhysicsEnv(VectorEnv):
                 np.repeat(preds_high + state_high, self.lookahead_len)  # future plan
             ]),
         )
-        self.action_space = Box(-2, 2, (1,))
+        self.action_space = Box(-0.2, 0.2, (1,))  # Residual action space (smaller range)
+        
+        # Initialize PID controllers (one per environment)
+        self.pid_controllers = [PIDController() for _ in range(self.num_envs)]
         
         # Load ALL data upfront - read all CSVs once in constructor
         print("Loading all trajectory data into GPU memory...")
@@ -234,14 +238,29 @@ class TinyPhysicsEnv(VectorEnv):
         self.state_history[:, -1, 2] = self.data_tensors['a_ego'][self.env_trajectory_indices, self.step_indices]
         self.target_lataccel_history[:, -1] = targets
         
+        # Compute PID controller output for each environment
+        pid_actions = torch.zeros(self.num_envs, device=self.device)
+        for i in range(self.num_envs):
+            # Get current state for PID controller (need to convert to CPU for numpy operations in PID)
+            target = targets[i].item()
+            current = self.current_lataccel[i].item()
+            # PID update doesn't need state or future_plan, passing None
+            pid_action = self.pid_controllers[i].update(target, current, None, None)
+            pid_actions[i] = pid_action
+        
+        # Combine PID action with residual from agent
+        # actions here are residuals from the agent
+        # actions = torch.zeros_like(actions, dtype=actions.dtype).to(actions.device)
+        combined_actions = pid_actions + actions
+        
         # Determine actions (use logged actions before CONTROL_START_IDX)
         before_control = self.step_indices < CONTROL_START_IDX
         logged_actions = self.data_tensors['steer_command'][self.env_trajectory_indices, self.step_indices]
-        actions = torch.where(before_control, logged_actions, actions)
-        actions = torch.clamp(actions, STEER_RANGE[0], STEER_RANGE[1])
+        combined_actions = torch.where(before_control, logged_actions, combined_actions)
+        combined_actions = torch.clamp(combined_actions, STEER_RANGE[0], STEER_RANGE[1])
         
-        # Update action history
-        self.action_history[:, -1] = actions
+        # Update action history (store the combined action for model input)
+        self.action_history[:, -1] = combined_actions
         
         # Prepare batched input for model (no roll needed - already in order!)
         # No clone needed since we're not modifying these
@@ -360,6 +379,9 @@ class TinyPhysicsEnv(VectorEnv):
         
         self.current_lataccel[env_index] = self.data_tensors['target_lataccel'][traj_idx, CONTEXT_LENGTH - 1]
         self.previous_pred[env_index] = self.current_lataccel[env_index]
+        
+        # Reset PID controller state
+        self.pid_controllers[env_index] = PIDController()
     
     def reset(self, seed=None, options=None):
         """Reset all environments"""

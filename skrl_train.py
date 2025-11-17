@@ -9,6 +9,7 @@ import torch.nn as nn
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 from skrl.memories.torch import RandomMemory
 from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
+from skrl.utils.model_instantiators.torch import gaussian_model, deterministic_model
 from skrl.resources.schedulers.torch import KLAdaptiveRL
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
@@ -75,14 +76,42 @@ def make_env_and_agent(device='cuda', load_weights=None):
     
     # Create modelnm
     models = {}
-    policy_net = Policy(env.observation_space, env.action_space, device)
-    value_net = Value(env.observation_space, env.action_space, device)
+    policy_net = gaussian_model(
+        env.observation_space, 
+        env.action_space, 
+        device, 
+        network=[{ 
+            "name": "net",
+            "input": "OBSERVATIONS",
+            "layers": [hidden_size, hidden_size],
+            "activations": "tanh"
+        }], 
+        output="ACTIONS",
+        clip_actions = False,
+        clip_log_std = True,
+        min_log_std = -20.0,
+        max_log_std = 2.0,
+        initial_log_std = 0.0
+     )
+    value_net = deterministic_model(
+        env.observation_space, 
+        env.action_space, 
+        device, 
+        network=[{ 
+            "name": "net",
+            "input": "OBSERVATIONS",
+            "layers": [hidden_size, hidden_size],
+            "activations": "tanh"
+        }], 
+        output="ONE",
+        clip_actions= False
+     )
     models["policy"] = policy_net
     models["value"] = value_net
     
-    # Initialize models
-    policy_net.init_parameters(mean=0.0, std=0.1)
-    value_net.init_parameters(mean=0.0, std=1)
+    # # Initialize models
+    # policy_net.init_parameters(mean=0.0, std=0.1)
+    # value_net.init_parameters(mean=0.0, std=1)
     
     # Configure PPO agent
     cfg = PPO_DEFAULT_CONFIG.copy()
@@ -91,7 +120,7 @@ def make_env_and_agent(device='cuda', load_weights=None):
     cfg["learning_rate"] = 1e-4
     cfg["mini_batches"] = 64
     cfg["value_loss_scale"] = 0.5
-    cfg["entropy_loss_scale"] = 1.0
+    cfg["entropy_loss_scale"] = 2.0
     
     # Create agent
     agent = PPO(models=models,
@@ -111,7 +140,7 @@ def train_agent(checkpoint_path=None):
     env, agent = make_env_and_agent(load_weights=checkpoint_path)
     
     # Configure trainer
-    cfg_trainer = {"timesteps": 1_000_000_000//env.num_envs, "headless": True}
+    cfg_trainer = {"timesteps": 10_000_000//env.num_envs, "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
     
     # Start training
